@@ -25,7 +25,6 @@ Options:
   --storage-state PATH   Playwright storage-state JSON from an authenticated ChatGPT session
   --chrome PATH          Chrome/Chromium executable (default: platform Chrome path)
   --port NUMBER          Loopback Responses port (default: 17841)
-  --skip-verify          Skip the startup ChatGPT verification probe
   -h, --help
 
 The listener intentionally binds to 127.0.0.1. Use SSH port forwarding for remote access.
@@ -98,7 +97,6 @@ async function main(): Promise<void> {
   const storageStateRaw = takeOption(args, "--storage-state");
   const chromeRaw = takeOption(args, "--chrome");
   const port = parsePort(takeOption(args, "--port"));
-  const skipVerify = takeFlag(args, "--skip-verify");
   if (args.length > 0) throw new Error(`Unknown arguments: ${args.join(" ")}`);
   if (!storageStateRaw) throw new Error("--storage-state is required");
 
@@ -110,21 +108,14 @@ async function main(): Promise<void> {
   }
   try { chmodSync(storageStatePath, 0o600); } catch {}
 
-  let capabilities = { solAvailable: true, proAvailable: false };
-  if (!skipVerify) {
-    process.stdout.write("Verifying the copied ChatGPT session in headless Chromium...\n");
-    capabilities = await verifyStorageState(chromeExecutablePath, storageStatePath);
-    atomicWriteFile(loginVerificationMarkerPath(storageStatePath), `${JSON.stringify({
-      version: 1,
-      authenticated: true,
-      verifiedAt: new Date().toISOString(),
-      ...capabilities,
-    })}\n`);
-  } else if (!existsSync(loginVerificationMarkerPath(storageStatePath))) {
-    throw new Error(
-      `--skip-verify requires an existing verification marker: ${loginVerificationMarkerPath(storageStatePath)}`,
-    );
-  }
+  process.stdout.write("Verifying the copied ChatGPT session in headless Chromium...\n");
+  const capabilities = await verifyStorageState(chromeExecutablePath, storageStatePath);
+  atomicWriteFile(loginVerificationMarkerPath(storageStatePath), `${JSON.stringify({
+    version: 1,
+    authenticated: true,
+    verifiedAt: new Date().toISOString(),
+    ...capabilities,
+  })}\n`);
 
   const config = defaultConfig("browser-only");
   config.host = "127.0.0.1";
