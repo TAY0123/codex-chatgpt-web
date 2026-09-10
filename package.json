@@ -25,6 +25,7 @@
   "scripts": {
     "start": "bun run src/cli.ts serve",
     "headless": "bun run scripts/start-headless.ts",
+    "session:export": "bun run scripts/export-storage-state.ts",
     "setup": "bun run src/cli.ts setup",
     "doctor": "bun run src/cli.ts doctor",
     "dev:launcher": "bun run src/cli.ts dev launcher",
