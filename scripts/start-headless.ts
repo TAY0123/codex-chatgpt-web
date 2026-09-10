@@ -3,7 +3,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { closeChatGptBrowserWorkers } from "../src/adapters/chatgpt-web/browser-worker";
-import { atomicWriteFile, defaultChromeExecutable, defaultConfig } from "../src/config";
+import { atomicWriteFile, defaultChromeExecutable, defaultConfig, expandUserPath } from "../src/config";
 import { loginVerificationMarkerPath } from "../src/browser-login";
 import {
   assertAuthenticatedChatGptPage,
@@ -19,13 +19,17 @@ const HELP = `codex-chatgpt-web headless ${VERSION}
 Run the browser-only Responses bridge on a server with no desktop session.
 
 Usage:
-  bun run headless -- --storage-state PATH [options]
+  bun run headless -- [options]
 
 Options:
-  --storage-state PATH   Playwright storage-state JSON from an authenticated ChatGPT session
+  --storage-state PATH   Authenticated ChatGPT storage state
+                         (default: ~/.codex-chatgpt-web/browser/storage-state.json)
   --chrome PATH          Chrome/Chromium executable (default: platform Chrome path)
   --port NUMBER          Loopback Responses port (default: 17841)
   -h, --help
+
+If storage state is missing, create it on a desktop machine with:
+  bun run session:export
 
 The listener intentionally binds to 127.0.0.1. Use SSH port forwarding for remote access.
 `;
@@ -98,11 +102,17 @@ async function main(): Promise<void> {
   const chromeRaw = takeOption(args, "--chrome");
   const port = parsePort(takeOption(args, "--port"));
   if (args.length > 0) throw new Error(`Unknown arguments: ${args.join(" ")}`);
-  if (!storageStateRaw) throw new Error("--storage-state is required");
 
-  const storageStatePath = resolve(storageStateRaw);
-  const chromeExecutablePath = resolve(chromeRaw || defaultChromeExecutable());
-  if (!existsSync(storageStatePath)) throw new Error(`Storage state does not exist: ${storageStatePath}`);
+  const config = defaultConfig("browser-only");
+  const storageStatePath = resolve(expandUserPath(storageStateRaw || config.storageStatePath));
+  const chromeExecutablePath = resolve(expandUserPath(chromeRaw || defaultChromeExecutable()));
+  if (!existsSync(storageStatePath)) {
+    throw new Error(
+      `Storage state does not exist: ${storageStatePath}\n`
+      + "Create it on a machine with a desktop browser using `bun run session:export`, then copy "
+      + "storage-state.json to this server with scp or another secure transport.",
+    );
+  }
   if (!existsSync(chromeExecutablePath)) {
     throw new Error(`Chrome/Chromium does not exist: ${chromeExecutablePath}. Pass --chrome with its executable path.`);
   }
@@ -117,7 +127,6 @@ async function main(): Promise<void> {
     ...capabilities,
   })}\n`);
 
-  const config = defaultConfig("browser-only");
   config.host = "127.0.0.1";
   config.port = port;
   config.browserHost = "managed-chrome";
