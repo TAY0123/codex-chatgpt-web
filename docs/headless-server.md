@@ -24,13 +24,42 @@ Typical executable paths are:
 /usr/bin/chromium-browser
 ```
 
-## 2. Copy an authenticated storage state to the server
+## 2. Create or copy an authenticated storage state
 
-On a machine where `codex-chatgpt-web` has already completed ChatGPT login, copy the Playwright storage state file:
+The headless server needs a Playwright storage-state JSON containing an authenticated ChatGPT session. This file must be created on a machine that has a graphical desktop and Chrome/Chromium.
+
+### If you do not already have `storage-state.json`
+
+On the desktop machine, check out this repository/branch, install dependencies, then run:
+
+```bash
+bun install --frozen-lockfile
+bun run session:export
+```
+
+A dedicated Chrome window opens. Sign in to ChatGPT, confirm the normal ChatGPT composer is visible, then quit that dedicated Chrome instance completely. The exporter verifies the session and writes:
 
 ```text
 ~/.codex-chatgpt-web/browser/storage-state.json
 ```
+
+Use `--output` or `--chrome` when needed:
+
+```bash
+bun run session:export -- \
+  --output "$HOME/storage-state.json" \
+  --chrome /usr/bin/google-chrome
+```
+
+### If another installation already has a valid session
+
+You can instead reuse its existing file:
+
+```text
+~/.codex-chatgpt-web/browser/storage-state.json
+```
+
+### Copy the session to the server
 
 Copy only the JSON file. The headless entrypoint performs a fresh verification and writes a new local verification marker beside it.
 
@@ -39,13 +68,13 @@ Treat this file like a credential: it contains authenticated browser session mat
 Example:
 
 ```bash
-mkdir -p ~/.codex-chatgpt-web/browser
-chmod 700 ~/.codex-chatgpt-web/browser
-scp storage-state.json server:~/.codex-chatgpt-web/browser/storage-state.json
-chmod 600 ~/.codex-chatgpt-web/browser/storage-state.json
+ssh server 'mkdir -p ~/.codex-chatgpt-web/browser && chmod 700 ~/.codex-chatgpt-web/browser'
+scp ~/.codex-chatgpt-web/browser/storage-state.json \
+  server:~/.codex-chatgpt-web/browser/storage-state.json
+ssh server 'chmod 600 ~/.codex-chatgpt-web/browser/storage-state.json'
 ```
 
-If ChatGPT later requires interactive sign-in again, refresh the storage state on a machine with a browser UI and copy the new file to the server.
+If ChatGPT later requires interactive sign-in again, rerun `bun run session:export` on a machine with a browser UI and copy the refreshed file to the server.
 
 ## 3. Start the headless server
 
@@ -53,12 +82,16 @@ From the repository checkout on the server:
 
 ```bash
 bun install --frozen-lockfile
-bun run headless -- \
-  --storage-state "$HOME/.codex-chatgpt-web/browser/storage-state.json" \
-  --chrome /usr/bin/google-chrome
+bun run headless -- --chrome /usr/bin/google-chrome
 ```
 
-Use another Chromium path if needed:
+The default storage-state path is:
+
+```text
+~/.codex-chatgpt-web/browser/storage-state.json
+```
+
+Use explicit paths when needed:
 
 ```bash
 bun run headless -- \
