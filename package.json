@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "start": "bun run src/cli.ts serve",
+    "headless": "bun run scripts/start-headless.ts",
     "setup": "bun run src/cli.ts setup",
     "doctor": "bun run src/cli.ts doctor",
     "dev:launcher": "bun run src/cli.ts dev launcher",
@@ -74,7 +75,7 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.12",
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.6.0",
     "hono": "4.12.34",
     "qs": "6.16.0",
     "zod-to-json-schema": "3.25.1"
