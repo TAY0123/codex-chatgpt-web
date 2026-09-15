@@ -37,11 +37,13 @@ bun install --frozen-lockfile
 bun run session:export
 ```
 
-A dedicated Chrome window opens. Sign in to ChatGPT, confirm the normal ChatGPT composer is visible, then quit that dedicated Chrome instance completely. The exporter verifies the session and writes:
+One dedicated normal Chrome window opens. Sign in to ChatGPT and leave that window open. As soon as the normal ChatGPT composer is available, the exporter attaches to that same Chrome process over a loopback-only DevTools endpoint, captures the authenticated session, and closes the dedicated window automatically. It writes:
 
 ```text
 ~/.codex-chatgpt-web/browser/storage-state.json
 ```
+
+Do not manually close the dedicated Chrome window during export. If it is closed before the composer is captured, the exporter exits with an error instead of trying to reopen the profile.
 
 Use `--output` or `--chrome` when needed:
 
