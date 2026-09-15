@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { chromium } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import {
   loginVerificationMarkerPath,
   sanitizeBrowserLoginStorageState,
@@ -22,6 +22,10 @@ import {
 } from "../src/config";
 import { VERSION } from "../src/version";
 
+const DEVTOOLS_READY_TIMEOUT_MS = 30_000;
+const LOGIN_READY_TIMEOUT_MS = 10 * 60_000;
+const POLL_MS = 100;
+
 const HELP = `codex-chatgpt-web session export ${VERSION}
 
 Create a Playwright storage-state file for the headless server on a machine with a desktop browser.
@@ -34,9 +38,9 @@ Options:
   --chrome PATH    Google Chrome/Chromium executable (default: platform Chrome path)
   -h, --help
 
-One normal Chrome window will open. Sign in to ChatGPT, confirm the composer is visible,
-then quit that dedicated Chrome instance completely. Session capture and verification continue
-headlessly; no second browser window should appear.
+One normal Chrome window will open. Sign in to ChatGPT and leave that window open.
+The exporter detects the authenticated composer, captures the session from that same Chrome
+instance over a loopback DevTools connection, then closes the dedicated window automatically.
 `;
 
 function takeOption(args: string[], name: string): string | undefined {
@@ -55,40 +59,63 @@ function takeFlag(args: string[], name: string): boolean {
   return true;
 }
 
-function removeTemporaryChromeTabSessions(profileDir: string): void {
-  const defaultProfile = join(profileDir, "Default");
-  rmSync(join(defaultProfile, "Sessions"), { recursive: true, force: true });
-  for (const name of ["Current Session", "Current Tabs", "Last Session", "Last Tabs"]) {
-    rmSync(join(defaultProfile, name), { force: true });
-  }
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolveSleep => setTimeout(resolveSleep, ms));
 }
 
-async function waitForLoginChrome(
-  chromeExecutablePath: string,
+function chromeExited(browser: ChildProcess): boolean {
+  return browser.exitCode !== null || browser.signalCode !== null;
+}
+
+async function waitForDevToolsEndpoint(
+  loginBrowser: ChildProcess,
   profileDir: string,
-): Promise<void> {
-  process.stdout.write(
-    "A normal Chrome window is open. Sign in to ChatGPT, confirm that the composer is visible, then quit this dedicated Chrome instance completely.\n",
-  );
-  const loginBrowser = spawn(chromeExecutablePath, [
-    `--user-data-dir=${profileDir}`,
-    "--new-window",
-    "--disable-background-mode",
-    "--no-first-run",
-    "--no-default-browser-check",
-    CHATGPT_TEMPORARY_CHAT_URL,
-  ], { env: process.env, stdio: "ignore" });
-  const exitCode = await new Promise<number>((resolveExit, rejectExit) => {
-    loginBrowser.once("error", rejectExit);
-    loginBrowser.once("exit", (code, signal) => {
-      if (signal) rejectExit(new Error(`Normal Chrome login window exited from signal ${signal}`));
-      else resolveExit(code ?? 1);
-    });
-  });
-  if (exitCode !== 0) throw new Error(`Normal Chrome login window exited with status ${exitCode}`);
+  timeoutMs = DEVTOOLS_READY_TIMEOUT_MS,
+): Promise<string> {
+  const activePortPath = join(profileDir, "DevToolsActivePort");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (chromeExited(loginBrowser)) {
+      throw new Error("Dedicated Chrome exited before its local DevTools endpoint became ready");
+    }
+    if (existsSync(activePortPath)) {
+      try {
+        const [portRaw] = readFileSync(activePortPath, "utf8").trim().split(/\r?\n/);
+        const port = Number(portRaw);
+        if (Number.isInteger(port) && port > 0 && port <= 65_535) {
+          return `http://127.0.0.1:${port}`;
+        }
+      } catch {
+        // Chrome may still be replacing the file. Poll until the bounded deadline.
+      }
+    }
+    await sleep(POLL_MS);
+  }
+  throw new Error(`Timed out waiting ${timeoutMs}ms for Chrome's local DevTools endpoint`);
 }
 
-async function captureAndVerifyHeadlessly(
+async function waitForAuthenticatedChatGptPage(
+  context: BrowserContext,
+  loginBrowser: ChildProcess,
+  timeoutMs = LOGIN_READY_TIMEOUT_MS,
+): Promise<Page> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (chromeExited(loginBrowser)) {
+      throw new Error("Dedicated Chrome was closed before the authenticated ChatGPT composer was captured");
+    }
+    for (const page of context.pages()) {
+      const visibleComposer = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
+      if (await visibleComposer.isVisible().catch(() => false)) return page;
+    }
+    await sleep(250);
+  }
+  throw new Error(
+    "Timed out waiting for the authenticated ChatGPT composer. Complete sign-in in the dedicated Chrome window and keep it open.",
+  );
+}
+
+async function captureFromLiveChrome(
   chromeExecutablePath: string,
   profileDir: string,
 ): Promise<{
@@ -96,46 +123,54 @@ async function captureAndVerifyHeadlessly(
   solAvailable: boolean;
   proAvailable: boolean;
 }> {
-  // Chrome normally discards session-only cookies on a plain restart. Restore session state so
-  // those cookies are loaded, but remove tab-session files first so no authenticated/IdP tabs are
-  // reopened during the automated capture.
-  removeTemporaryChromeTabSessions(profileDir);
-  const context = await chromium.launchPersistentContext(profileDir, {
-    executablePath: chromeExecutablePath,
-    headless: true,
-    chromiumSandbox: true,
-    ignoreDefaultArgs: [
-      "--no-sandbox",
-      "--password-store=basic",
-      "--use-mock-keychain",
-    ],
-    args: [
-      "--disable-background-mode",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--restore-last-session",
-    ],
-  });
+  process.stdout.write(
+    "A normal Chrome window is open. Sign in to ChatGPT and leave this dedicated window open; the exporter will close it after capture.\n",
+  );
+  const loginBrowser = spawn(chromeExecutablePath, [
+    `--user-data-dir=${profileDir}`,
+    "--remote-debugging-port=0",
+    "--remote-debugging-address=127.0.0.1",
+    "--new-window",
+    "--disable-background-mode",
+    "--no-first-run",
+    "--no-default-browser-check",
+    CHATGPT_TEMPORARY_CHAT_URL,
+  ], { env: process.env, stdio: "ignore" });
+
+  let browser: Browser | undefined;
   try {
-    const page = context.pages()[0] ?? await context.newPage();
-    await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
-    });
-    await page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first().waitFor({
-      state: "visible",
-      timeout: 60_000,
-    });
+    const endpoint = await waitForDevToolsEndpoint(loginBrowser, profileDir);
+    browser = await chromium.connectOverCDP(endpoint, { timeout: DEVTOOLS_READY_TIMEOUT_MS });
+    const context = browser.contexts()[0];
+    if (!context) throw new Error("Chrome DevTools connection exposed no browser context");
+
+    let page = await waitForAuthenticatedChatGptPage(context, loginBrowser);
+    if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
+      process.stdout.write("Authenticated composer detected. Preparing Temporary Chat for export...\n");
+      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60_000,
+      });
+      await page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first().waitFor({
+        state: "visible",
+        timeout: 60_000,
+      });
+    }
     await assertAuthenticatedChatGptPage(page);
     await assertTemporaryChatPage(page);
+
+    process.stdout.write("Authenticated ChatGPT session detected. Capturing session state...\n");
     const capabilities = await detectChatGptAccountCapabilities(page);
     const storageState = sanitizeBrowserLoginStorageState(await context.storageState());
     if (storageState.cookies.length === 0) {
-      throw new Error("The authenticated Chrome profile contains no ChatGPT/OpenAI cookies");
+      throw new Error("The authenticated Chrome session contains no ChatGPT/OpenAI cookies");
     }
     return { storageState, ...capabilities };
   } finally {
-    await context.close();
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    if (!chromeExited(loginBrowser)) loginBrowser.kill();
   }
 }
 
@@ -167,9 +202,7 @@ async function main(): Promise<void> {
   try { chmodSync(profileDir, 0o700); } catch {}
 
   try {
-    await waitForLoginChrome(chromeExecutablePath, profileDir);
-    process.stdout.write("Capturing and verifying the authenticated session headlessly...\n");
-    const result = await captureAndVerifyHeadlessly(chromeExecutablePath, profileDir);
+    const result = await captureFromLiveChrome(chromeExecutablePath, profileDir);
     atomicWriteFile(storageStatePath, `${JSON.stringify(result.storageState)}\n`);
     atomicWriteFile(loginVerificationMarkerPath(storageStatePath), `${JSON.stringify({
       version: 1,
