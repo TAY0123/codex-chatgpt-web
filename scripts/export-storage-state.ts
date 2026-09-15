@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { chromium, type BrowserContext } from "playwright-core";
+import { chromium } from "playwright-core";
 import {
   loginVerificationMarkerPath,
   sanitizeBrowserLoginStorageState,
@@ -166,7 +166,6 @@ async function main(): Promise<void> {
   const profileDir = mkdtempSync(join(profileParent, "login-profile-"));
   try { chmodSync(profileDir, 0o700); } catch {}
 
-  let contextForCleanup: BrowserContext | undefined;
   try {
     await waitForLoginChrome(chromeExecutablePath, profileDir);
     process.stdout.write("Capturing and verifying the authenticated session headlessly...\n");
@@ -183,7 +182,6 @@ async function main(): Promise<void> {
     process.stdout.write(`\nSession export complete: ${storageStatePath}\n`);
     process.stdout.write("Treat this file as a credential. Copy it to the headless server with scp or another secure transport.\n");
   } finally {
-    if (contextForCleanup && !contextForCleanup.isClosed()) await contextForCleanup.close().catch(() => {});
     try {
       rmSync(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     } catch (error) {
