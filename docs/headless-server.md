@@ -37,7 +37,7 @@ bun install --frozen-lockfile
 bun run session:export
 ```
 
-A dedicated Chrome window opens. Sign in to ChatGPT, confirm the normal ChatGPT composer is visible, then quit that dedicated Chrome instance completely. The exporter verifies the session and writes:
+One dedicated normal Chrome window opens. Sign in to ChatGPT, confirm the normal ChatGPT composer is visible, then quit that dedicated Chrome instance completely. After it closes, the exporter restores the temporary profile and verifies/captures the session in headless Chromium; no second browser window should appear. It writes:
 
 ```text
 ~/.codex-chatgpt-web/browser/storage-state.json
