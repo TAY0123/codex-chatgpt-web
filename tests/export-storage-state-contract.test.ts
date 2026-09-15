@@ -9,6 +9,7 @@ test("session export captures from the same visible Chrome instance over loopbac
   expect(source).toContain("DevToolsActivePort");
   expect(source).toContain("chromium.connectOverCDP");
   expect(source).toContain("Authenticated ChatGPT session detected. Capturing session state...");
+  expect(source).toContain("leave this dedicated window open; the exporter will close it after capture");
   expect(source).not.toContain("launchPersistentContext");
   expect(source).not.toContain("headless: true");
   expect(source).not.toContain('"--no-sandbox"');
